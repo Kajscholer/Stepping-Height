@@ -1,1 +1,1 @@
-# Engineering-Research---Stepping-Height
+# Influence of Virtual Reality Body Representations on Stepping Height
