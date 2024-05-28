@@ -1256,14 +1256,17 @@ observeEvent(input$save, {
 ```
 
 ## Engineering Research Code
+### Maximum Height
+The following code calculates the maximum achieved height before reaching each target. The results have been plotted as boxplots.
 ```{r, echo=FALSE}
 
+# Function that calculates the maximum heights before reaching each target
 calculate_max_height <- function(cnum, pnum, dtFiltered) {
   max_height_data <- data.frame()  # Initialize an empty data frame to store max heights
   outlier_threshold <- 2  # Set an appropriate threshold to discard outliers
 
-  for (c in cnum) {
-    for (p in pnum) {
+  for (c in cnum) { # for all conditions
+    for (p in pnum) { # for all participatns
       # Get all vectors
       yright <- right(p, c)$pos_y
       yleft <- left(p, c)$pos_y
@@ -1307,139 +1310,49 @@ calculate_max_height <- function(cnum, pnum, dtFiltered) {
   return(max_height_data)
 }
 
-#observe({
-  #max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
-  #print(max_height_data)
-  #print(distances)
-#})
-
-# Plotting code
+# Plotting boxplots for conditions against maximum height
 renderPlot({
   max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
   ggplot(max_height_data, aes(x = condition, y = max_height)) +
     geom_boxplot() + #aes(fill = condition)
     geom_point(position = position_jitterdodge(), aes(color = as.factor(participant)), size = 2) +
+    labs(x = "Condition", y = "Maximum Height (m)", color = "Participant") +
+    theme_minimal()
+})
+
+# Plotting boxplots for target number against maximum height
+renderPlot({
+  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
+  ggplot(max_height_data, aes(x = as.factor(target), y = max_height)) +
+    geom_boxplot(aes(fill = condition)) +
+    geom_point(position = position_jitterdodge(), aes(color = as.factor(participant)), size = 2) +
     labs(x = "Target Number", y = "Maximum Height (m)", color = "Participant") +
     theme_minimal()
 })
 
-observeEvent(input$save, {
-  p = ggplot(max_height_data, aes(x = condition, y = max_height, fill = trialNo)) +
-    geom_boxplot(aes(group = interaction(condition, trialNo)), outlier.shape = NA) +
-    geom_jitter(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.7)) +
-    scale_fill_grey(name = "Trial No", start = 0.2, end = 0.8)  # scale_color_discrete for colors
-  ggsave("distances_bp.svg", plot = p, device = "svg") #install.packages("svglite")
-})
-
 ```
-```{r, echo=FALSE}
-get_summ <- reactive(function(column_name){
-  return ( ddply(max_height_data, column_name, summarise, grp.mean=mean(distance)) )
-})
 
-get_mu <- reactive({
-  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
-  column_names = colnames(max_height_data)
-  mu <- lapply(column_names, get_summ())
-  return (setNames(mu, column_names))
-})
-```
-```{r}
-
-dtResiduals_h = reactive({
-  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
-  mu_h = get_mu()
-  max_height_data$residual = 999 # just fill with some placeholder value
-  max_height_data$mean = 999
-
-  for (i in 1:length(mu_h$condition$grp.mean)){
-    row_h = mu_h$condition[i,]
-    max_height_data[condition==row_h$condition]$mean = row_h$grp.mean
-    max_height_data[condition==row_h$condition]$residual = 
-      max_height_data[condition==row_h$condition]$max_height - row_h$grp.mean
-  }
-  return (max_height_data)
-})
-
-renderPrint({
-  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
-  max_height_data = dtResiduals_h()
-
-  print(leveneTest(max_height ~ condition, max_height_data))
-  print(bartlett.test(max_height ~ condition, max_height_data))
-})
-
-renderPlot({
-  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
-  max_height_data = dtResiduals_h()
-  ggplot(max_height_data,
-         aes(residual)) +
-           geom_density(fill = "gray")
-})
-
-
-```
 ###  Linear Mixed-Effects
-Since there are unequal sample sizes, the ANOVA method canot be used. Additionally, the data are not normally distrubuted, and thus using a linear-mixed model regression is invalid (to be improved later).
+Since there are unequal sample sizes, the ANOVA method cannot be used. Additionally, the data are not normally distributed, and thus using a linear-mixed model regression is invalid (to be improved later).
 ```{r, echo=FALSE}
 
-# Load necessary libraries
-library(lme4)
-library(lmerTest)
-
+# Reactive function that is recalculated with different inputs
 get_lmer_h = reactive({
   max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
   
+  # The condition variables are converted to the titles (A, F, N)
   max_height_data$condition = factor(max_height_data$condition, levels = c("A","F","N"))
   summary(max_height_data)
   
+  # A linear mixed-effects model is fitted to the data
   m_h <- lmer(max_height ~ condition + (1 | participant), data=max_height_data)
   return (m_h)
 })
 
-renderPrint({
-  m_h = get_lmer_h()
-  print(m_h)
-  print("..........")
-  print(anova(m_h))
-  print(eta_sq(m_h, partial=TRUE))
-  #print(summary(partial_eta_squared(m)))
-  print(r.squaredGLMM(m_h))
-  m_h.emm.s = emmeans(m_h, list(pairwise ~ condition), adjust = "bonferroni")
-  print(m_h.emm.s)
-  m_h.eff = eff_size(m_h.emm.s, sigma = sigma(m_h), edf = 561)
-  print(m_h.eff)
-})
-
+# Plotting Q-Q plot of the residuals of the fitted model
 renderPlot({
   m_h = get_lmer_h()
   qqnorm(resid(m_h))
 })
 
-```
-We can now update our boxplot with the p-values:
-```{r, echo=FALSE}
-makeBoxPlots_h = reactive({
-    stat.test <- tibble::tribble(
-    ~group1, ~group2, ~p.adj,     ~y.position, ~p.adj.signif,
-    
-    #"A",    "F",    1.000000e+00, .24, "",
-    "A",    "N",    9.164185e-99, .265, "****",
-    "F",    "N",    2.917203e-95, .25, "****",
-    
-  )
-  p_h = ggplot(dtResiduals_h(), aes(x = condition, y = max_height)) +
-    geom_boxplot() + geom_jitter() + stat_pvalue_manual(stat.test,label= "p.adj.signif")#, y.position = 35, step.increase = 0.1,hide.ns = TRUE)
-  return (p_h)
-})
-
-renderPlot({
-  p_h = makeBoxPlots_h()
-  p_h
-})
-
-# Filter the DT based on selected inputs
-observeEvent(input$save, {
-  ggsave("boxplot.svg", plot = makeBoxPlots_h(), device = "svg")
-})
 ```
