@@ -29,6 +29,8 @@ library(emmeans)
 library(sjstats)
 library(lmerTest)
 library(MuMIn)
+library(lmtest)
+library(DHARMa)
 
 # saving figures
 library(svglite)
@@ -1263,44 +1265,52 @@ The following code calculates the maximum achieved height before reaching each t
 # Function that calculates the maximum heights before reaching each target
 calculate_max_height <- function(cnum, pnum, dtFiltered) {
   max_height_data <- data.frame()  # Initialize an empty data frame to store max heights
-  outlier_threshold <- 2  # Set an appropriate threshold to discard outliers
+  outlier_threshold <- 0.4  # Set an appropriate threshold to discard outliers
 
   for (c in cnum) { # for all conditions
-    for (p in pnum) { # for all participatns
+    for (p in pnum) { # for all participants
       # Get all vectors
       yright <- right(p, c)$pos_y
       yleft <- left(p, c)$pos_y
-      time <- (right(p, c)$time - right(p, c)$time[1])
 
       # Find the indices where the participant steps onto the targets
       right_rows <- dtFiltered()[condition == c & leg == "right" & participant == p,]
       left_rows <- dtFiltered()[condition == c & leg == "left" & participant == p,]
 
-      # Initialize a vector to store max heights for all targets
+      # Initialize a vector to store max heights and trials for all targets
       max_heights <- numeric()
-
-      for (target_index in right_rows$index) {
-        if (!is.na(target_index)) {  # Check if the target is reached within the time limit
+      trialNos <- numeric()
+      
+      rightheelStrikeIndices <- right_rows$index
+      leftheelStrikeIndices <- left_rows$index
+      
+      for (i in 1:(length(rightheelStrikeIndices) - 1)) {
+        if (!is.na(rightheelStrikeIndices[i]) && !is.na(rightheelStrikeIndices[i + 1])) {  # Check if the target is reached within the time limit
           # Calculate maximum height before stepping onto the target
-          max_heights <- c(max_heights, max(yright[1:target_index], yleft[1:target_index]))
+          max_heights <- c(max_heights, max(yright[rightheelStrikeIndices[i]:rightheelStrikeIndices[i + 1]] - yright[rightheelStrikeIndices[i]]))
+          trialNos <- c(trialNos, right_rows$trialNo[i])
         }
       }
       
-      for (target_index in left_rows$index) {
-        if (!is.na(target_index)) {  # Check if the target is reached within the time limit
+      for (i in 1:(length(leftheelStrikeIndices) - 1)) {
+        if (!is.na(leftheelStrikeIndices[i]) && !is.na(leftheelStrikeIndices[i + 1])) {  # Check if the target is reached within the time limit
           # Calculate maximum height before stepping onto the target
-          max_heights <- c(max_heights, max(yright[1:target_index], yleft[1:target_index]))
+          max_heights <- c(max_heights, max(yleft[leftheelStrikeIndices[i]:leftheelStrikeIndices[i + 1]] - yleft[leftheelStrikeIndices[i]]))
+          trialNos <- c(trialNos, left_rows$trialNo[i])
         }
       }
       
       # Filter out outliers
-      max_heights <- max_heights[max_heights <= outlier_threshold]
+      filtered_indices <- max_heights <= outlier_threshold
+      max_heights <- max_heights[filtered_indices]
+      trialNos <- trialNos[filtered_indices]
       
       # Create a data frame with max heights for each participant, condition, and target
       max_height_rows <- data.frame(max_height = max_heights,
                                     condition = c,
                                     participant = p,
-                                    target = seq_along(max_heights))
+                                    target = seq_along(max_heights),
+                                    trialNo = trialNos)
       
       # Add the rows to the max height data
       max_height_data <- rbind(max_height_data, max_height_rows)
@@ -1333,8 +1343,16 @@ renderPlot({
 ```
 
 ###  Linear Mixed-Effects
-Since there are unequal sample sizes, the ANOVA method cannot be used. Additionally, the data are not normally distributed, and thus using a linear-mixed model regression is invalid (to be improved later).
+Since there are unequal sample sizes, the ANOVA method cannot be used. The data is normally distributed, and thus, using a linear-mixed model regression can be used.
 ```{r, echo=FALSE}
+
+# Function to create and save the Q-Q plot
+create_and_save_qq_plot <- function(model, file_name) {
+  postscript(file_name, onefile = TRUE, horizontal = FALSE, paper = "special", width = 7, height = 7)
+  par(mar = c(5, 5, 4, 2) + 0.1)  # Adjusting figure margin
+  qqnorm(resid(model))
+  dev.off()
+}
 
 # Reactive function that is recalculated with different inputs
 get_lmer_h = reactive({
@@ -1342,17 +1360,104 @@ get_lmer_h = reactive({
   
   # The condition variables are converted to the titles (A, F, N)
   max_height_data$condition = factor(max_height_data$condition, levels = c("A","F","N"))
+  
+  # The trial variables are converted to the titles (1, 2, 3)
+  max_height_data$trialNo = factor(max_height_data$trialNo, levels = c("1","2","3"))
   summary(max_height_data)
   
   # A linear mixed-effects model is fitted to the data
-  m_h <- lmer(max_height ~ condition + (1 | participant), data=max_height_data)
+  m_h <- lmer(max_height ~ condition*trialNo + (1 | participant), data=max_height_data)
   return (m_h)
 })
 
-# Plotting Q-Q plot of the residuals of the fitted model
+# Plotting Q-Q plot of the residuals of the fitted model and saving it as an EPS file
 renderPlot({
   m_h = get_lmer_h()
+  
+  # Create the Q-Q plot for display
   qqnorm(resid(m_h))
+})
+```
+###  P-value & DHARMa Results
+The following tables show the p-values and DHARMa results
+```{r, echo=FALSE}
+# Extract and display p-values with more precision
+p_values_table <- reactive({
+  m_h <- get_lmer_h()
+  summary_output <- summary(m_h)
+  
+  # Define better term names
+  term_names <- c("(Intercept)" = "Intercept (Condition Avatat, Trial 1)",
+                  "conditionF" = "Condition Feet (Feet vs. Avatar)",
+                  "conditionN" = "Condition Npne (None vs. Avatar)",
+                  "trialNo2" = "Trial 2 (vs. Trial 1)",
+                  "trialNo3" = "Trial 3 (vs. Trial 1)",
+                  "conditionF:trialNo2" = "Condition Feet * Trial 2",
+                  "conditionN:trialNo2" = "Condition None * Trial 2",
+                  "conditionF:trialNo3" = "Condition Feet * Trial 3",
+                  "conditionN:trialNo3" = "Condition None * Trial 3")
+  
+  # Extracting coefficients, standard errors, t-values, and p-values
+  p_values_df <- data.frame(
+    Term = term_names[rownames(summary_output$coefficients)],
+    Estimate = round(summary_output$coefficients[, "Estimate"], 5),
+    Std.Error = round(summary_output$coefficients[, "Std. Error"], 5),
+    t.value = round(summary_output$coefficients[, "t value"], 5),
+    p.value = formatC(summary_output$coefficients[, "Pr(>|t|)"], format = "e", digits = 3)
+  )
+  
+  return(p_values_df)
+})
+
+# Display the table in the R Markdown document
+renderTable({
+  p_values_table()
+}, caption = "Model Coefficients and P-Values")
+
+# Function using DHARMa package for residual diagnostics
+perform_breusch_pagan_test <- function(model) {
+  simulation_output <- simulateResiduals(fittedModel = model)
+  test_result <- testResiduals(simulation_output)
+  return(test_result)
+}
+
+# Perform the diagnostic and display the results
+renderPrint({
+  m_h <- get_lmer_h()
+  bptest_result <- perform_breusch_pagan_test(m_h)
+  print(bptest_result)
+})
+
+```
+### Histrogram of step height
+Histogram displaying frequency of step height
+```{r, echo=FALSE}
+# Function to create and save the histogram of step heights
+create_histogram <- function(data) {
+  ggplot(data, aes(x = max_height)) +
+    geom_histogram(binwidth = 0.01, fill = "blue", color = "black", alpha = 0.7) +
+    labs(title = "Histogram of Step Heights",
+         x = "Step Height (m)",
+         y = "Frequency") +
+    theme_minimal()
+}
+
+# Plotting histogram for all step heights
+renderPlot({
+  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
+  histogram_plot <- create_histogram(max_height_data)
+  print(histogram_plot)
+})
+
+# Save the histogram as an EPS file
+observeEvent(input$save, {
+  max_height_data <- calculate_max_height(input$cnum, input$pnum, dtFiltered)
+  histogram_plot <- create_histogram(max_height_data)
+  
+  # Save the plot as an EPS file
+  postscript("histogram_step_heights.eps", onefile = TRUE, horizontal = FALSE, paper = "special", width = 7, height = 5)
+  print(histogram_plot)
+  dev.off()
 })
 
 ```
